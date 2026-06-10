@@ -11,6 +11,7 @@ import (
 // Config carries the server's dependencies.
 type Config struct {
 	Verifier auth.Verifier
+	Upstream http.Handler // OpenAI-compatible inference backend proxy
 }
 
 // New returns the gateway's root HTTP handler. /healthz is public;
@@ -21,6 +22,8 @@ func New(cfg Config) http.Handler {
 
 	protected := auth.Middleware(cfg.Verifier)
 	mux.Handle("GET /v1/me", protected(http.HandlerFunc(handleMe)))
+	mux.Handle("POST /v1/chat/completions", protected(cfg.Upstream))
+	mux.Handle("GET /v1/models", protected(cfg.Upstream))
 
 	return mux
 }
