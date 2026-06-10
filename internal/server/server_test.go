@@ -6,9 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/viseuai/gateway/internal/auth"
+	"github.com/viseuai/gateway/internal/usage"
 )
 
 // stubVerifier accepts exactly the token "good".
@@ -51,6 +53,39 @@ func TestChatCompletionsForwardsToUpstream(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != `{"id":"cmpl-upstream"}` {
 		t.Errorf("upstream body not forwarded: %s", got)
+	}
+}
+
+type captureUsage struct{ events []usage.Event }
+
+func (c *captureUsage) Record(_ context.Context, e usage.Event) error {
+	c.events = append(c.events, e)
+	return nil
+}
+
+func TestCompletionsRecordUsageWithIdentity(t *testing.T) {
+	rec := &captureUsage{}
+	srv := New(Config{
+		Verifier: stubVerifier{},
+		Upstream: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write([]byte(`{}`))
+		}),
+		Usage: rec,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"qwen2.5-0.5b-instruct"}`))
+	req.Header.Set("Authorization", "Bearer good")
+	srv.ServeHTTP(httptest.NewRecorder(), req)
+
+	if len(rec.events) != 1 {
+		t.Fatalf("usage events: got %d, want 1", len(rec.events))
+	}
+	if rec.events[0].Subject != "user-123" {
+		t.Errorf("subject: got %q (auth identity must reach usage)", rec.events[0].Subject)
+	}
+	if rec.events[0].Model != "qwen2.5-0.5b-instruct" {
+		t.Errorf("model: got %q", rec.events[0].Model)
 	}
 }
 

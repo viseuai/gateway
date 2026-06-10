@@ -6,12 +6,14 @@ import (
 	"net/http"
 
 	"github.com/viseuai/gateway/internal/auth"
+	"github.com/viseuai/gateway/internal/usage"
 )
 
 // Config carries the server's dependencies.
 type Config struct {
 	Verifier auth.Verifier
-	Upstream http.Handler // OpenAI-compatible inference backend proxy
+	Upstream http.Handler   // OpenAI-compatible inference backend proxy
+	Usage    usage.Recorder // metadata-only accounting; nil disables
 }
 
 // New returns the gateway's root HTTP handler. /healthz is public;
@@ -20,9 +22,14 @@ func New(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 
+	completions := cfg.Upstream
+	if cfg.Usage != nil {
+		completions = usage.Middleware(cfg.Usage)(completions)
+	}
+
 	protected := auth.Middleware(cfg.Verifier)
 	mux.Handle("GET /v1/me", protected(http.HandlerFunc(handleMe)))
-	mux.Handle("POST /v1/chat/completions", protected(cfg.Upstream))
+	mux.Handle("POST /v1/chat/completions", protected(completions))
 	mux.Handle("GET /v1/models", protected(cfg.Upstream))
 
 	return mux
