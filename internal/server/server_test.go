@@ -22,7 +22,50 @@ func (stubVerifier) Verify(_ context.Context, raw string) (*auth.Identity, error
 }
 
 func newTestServer() http.Handler {
-	return New(Config{Verifier: stubVerifier{}})
+	return newTestServerWithUpstream(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"cmpl-upstream"}`))
+	}))
+}
+
+func newTestServerWithUpstream(upstream http.Handler) http.Handler {
+	return New(Config{Verifier: stubVerifier{}, Upstream: upstream})
+}
+
+func TestChatCompletionsRequiresAuth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	newTestServer().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /v1/chat/completions without token: got %d, want 401", rec.Code)
+	}
+}
+
+func TestChatCompletionsForwardsToUpstream(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer good")
+	rec := httptest.NewRecorder()
+	newTestServer().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d (body: %s)", rec.Code, rec.Body)
+	}
+	if got := rec.Body.String(); got != `{"id":"cmpl-upstream"}` {
+		t.Errorf("upstream body not forwarded: %s", got)
+	}
+}
+
+func TestModelsListRequiresAuthAndForwards(t *testing.T) {
+	srv := newTestServer()
+
+	rec := get(t, srv, "/v1/models", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /v1/models without token: got %d, want 401", rec.Code)
+	}
+
+	rec = get(t, srv, "/v1/models", "Bearer good")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/models: got %d", rec.Code)
+	}
 }
 
 func get(t *testing.T, h http.Handler, path, authz string) *httptest.ResponseRecorder {
