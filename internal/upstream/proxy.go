@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 )
 
 // Handler returns a reverse proxy to the backend at target. Paths are
@@ -18,6 +19,17 @@ func Handler(target *url.URL) http.Handler {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.SetXForwarded()
+		},
+		// The gateway is the only CORS authority: engines (llama.cpp, MLX)
+		// emit their own permissive CORS headers, and forwarding them
+		// duplicates ours, which browsers reject.
+		ModifyResponse: func(res *http.Response) error {
+			for header := range res.Header {
+				if strings.HasPrefix(header, "Access-Control-") {
+					res.Header.Del(header)
+				}
+			}
+			return nil
 		},
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
