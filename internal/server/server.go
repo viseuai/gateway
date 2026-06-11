@@ -71,15 +71,21 @@ func New(cfg Config) http.Handler {
 	}
 
 	protected := auth.Middleware(cfg.Verifier)
+	// Authentication is open; SERVICE requires approval: the member role is
+	// granted explicitly by the direção (gated access by design).
+	member := func(h http.Handler) http.Handler {
+		return protected(roleOnly("member", h.ServeHTTP))
+	}
+
 	mux.Handle("GET /v1/me", protected(http.HandlerFunc(handleMe)))
-	mux.Handle("POST /v1/chat/completions", protected(completions))
-	mux.Handle("GET /v1/models", protected(models))
+	mux.Handle("POST /v1/chat/completions", member(completions))
+	mux.Handle("GET /v1/models", member(models))
 
 	if cfg.Keys != nil {
 		h := keyHandlers{keys: cfg.Keys}
-		mux.Handle("POST /v1/keys", protected(oidcOnly(h.create)))
-		mux.Handle("GET /v1/keys", protected(oidcOnly(h.list)))
-		mux.Handle("DELETE /v1/keys/{id}", protected(oidcOnly(h.revoke)))
+		mux.Handle("POST /v1/keys", member(oidcOnly(h.create)))
+		mux.Handle("GET /v1/keys", member(oidcOnly(h.list)))
+		mux.Handle("DELETE /v1/keys/{id}", member(oidcOnly(h.revoke)))
 	}
 
 	if cfg.Registry != nil {
@@ -89,7 +95,7 @@ func New(cfg Config) http.Handler {
 		}
 		mux.Handle("POST /v1/nodes/heartbeat",
 			protected(roleOnly("node", handleHeartbeat(cfg.Registry))))
-		mux.Handle("GET /v1/nodes", protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("GET /v1/nodes", member(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id, _ := auth.IdentityFrom(r.Context())
 			nodes, err := cfg.Registry.NodesBySubject(r.Context(), id.Subject, ttl)
 			if err != nil {
