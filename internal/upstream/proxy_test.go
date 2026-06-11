@@ -85,6 +85,29 @@ func TestStreamsSSEWithFlushes(t *testing.T) {
 	}
 }
 
+func TestStripsUpstreamCORSHeaders(t *testing.T) {
+	// engines (llama.cpp, mlx_lm.server) emit Access-Control-Allow-Origin: *;
+	// passing it through duplicates the gateway's own CORS header and
+	// browsers reject the response. The gateway is the only CORS authority.
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "X-Whatever")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer up.Close()
+
+	h := Handler(target(t, up.URL))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	for _, header := range []string{"Access-Control-Allow-Origin", "Access-Control-Allow-Headers"} {
+		if got := rec.Header().Get(header); got != "" {
+			t.Errorf("upstream %s leaked through the proxy: %q", header, got)
+		}
+	}
+}
+
 func TestUpstreamDownIs502(t *testing.T) {
 	dead := httptest.NewServer(nil)
 	dead.Close() // guaranteed-refused port
