@@ -14,14 +14,50 @@ import (
 	"github.com/viseuai/gateway/internal/usage"
 )
 
-// stubVerifier accepts exactly the token "good".
+// stubVerifier: "good" is an approved member; "newbie" is authenticated
+// but not yet approved (no roles).
 type stubVerifier struct{}
 
 func (stubVerifier) Verify(_ context.Context, raw string) (*auth.Identity, error) {
-	if raw != "good" {
-		return nil, errors.New("invalid token")
+	switch raw {
+	case "good":
+		return &auth.Identity{Subject: "user-123", Email: "membro@viseuai.org", Roles: []string{"member"}, Method: auth.MethodOIDC}, nil
+	case "newbie":
+		return &auth.Identity{Subject: "user-456", Email: "novo@viseuai.org", Roles: nil, Method: auth.MethodOIDC}, nil
 	}
-	return &auth.Identity{Subject: "user-123", Email: "membro@viseuai.org", Roles: []string{"member"}, Method: auth.MethodOIDC}, nil
+	return nil, errors.New("invalid token")
+}
+
+func TestServiceSurfaceRequiresApproval(t *testing.T) {
+	srv := New(Config{
+		Verifier: stubVerifier{},
+		Upstream: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{}`)) }),
+		Keys:     &fakeKeys{},
+		Registry: fakeNodeLister{},
+	})
+
+	cases := [][2]string{
+		{http.MethodPost, "/v1/chat/completions"},
+		{http.MethodGet, "/v1/models"},
+		{http.MethodGet, "/v1/keys"},
+		{http.MethodPost, "/v1/keys"},
+		{http.MethodGet, "/v1/nodes"},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(c[0], c[1], strings.NewReader(`{"name":"x"}`))
+		req.Header.Set("Authorization", "Bearer newbie")
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s without member role: got %d, want 403", c[0], c[1], rec.Code)
+		}
+	}
+
+	// /v1/me must remain reachable so the apps can show "awaiting approval"
+	rec := get(t, srv, "/v1/me", "Bearer newbie")
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /v1/me for unapproved user: got %d, want 200", rec.Code)
+	}
 }
 
 func newTestServer() http.Handler {
