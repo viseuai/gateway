@@ -12,11 +12,18 @@ import (
 	"strings"
 )
 
+// Authentication methods.
+const (
+	MethodOIDC   = "oidc"
+	MethodAPIKey = "api_key"
+)
+
 // Identity is the authenticated caller as the rest of the gateway sees it.
 type Identity struct {
 	Subject string
 	Email   string
 	Roles   []string
+	Method  string // MethodOIDC or MethodAPIKey
 }
 
 // Verifier turns a raw bearer token into an Identity.

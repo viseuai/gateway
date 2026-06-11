@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/viseuai/gateway/internal/apikey"
 	"github.com/viseuai/gateway/internal/auth"
 	"github.com/viseuai/gateway/internal/usage"
 )
@@ -20,7 +21,7 @@ func (stubVerifier) Verify(_ context.Context, raw string) (*auth.Identity, error
 	if raw != "good" {
 		return nil, errors.New("invalid token")
 	}
-	return &auth.Identity{Subject: "user-123", Email: "membro@viseuai.org", Roles: []string{"member"}}, nil
+	return &auth.Identity{Subject: "user-123", Email: "membro@viseuai.org", Roles: []string{"member"}, Method: auth.MethodOIDC}, nil
 }
 
 func newTestServer() http.Handler {
