@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 
 	"github.com/viseuai/gateway/internal/apikey"
 	"github.com/viseuai/gateway/internal/auth"
 	"github.com/viseuai/gateway/internal/db"
+	"github.com/viseuai/gateway/internal/quota"
 	"github.com/viseuai/gateway/internal/server"
 	"github.com/viseuai/gateway/internal/upstream"
 	"github.com/viseuai/gateway/internal/usage"
@@ -40,7 +42,14 @@ func main() {
 		cfg.Usage = usage.NewPG(pool)
 		cfg.Keys = apikey.NewManager(store)
 		cfg.Verifier = auth.PrefixVerifier(apikey.Prefix, apikey.NewVerifier(store), verifier)
-		log.Print("postgres: usage accounting + api keys enabled")
+
+		limits := quota.Limits{
+			DailyRequests: envInt("QUOTA_DAILY_REQUESTS", 500),
+			MonthlyTokens: int64(envInt("QUOTA_MONTHLY_TOKENS", 2_000_000)),
+		}
+		cfg.Quota = quota.New(quota.NewPG(pool), limits).Middleware
+		log.Printf("postgres: usage accounting + api keys + quotas enabled (%d req/day, %d tokens/month)",
+			limits.DailyRequests, limits.MonthlyTokens)
 	} else {
 		log.Print("postgres: DISABLED (no DATABASE_URL) — oidc only, no accounting")
 	}
@@ -58,4 +67,16 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Fatalf("%s must be an integer, got %q", key, v)
+	}
+	return n
 }

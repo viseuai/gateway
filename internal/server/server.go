@@ -22,9 +22,10 @@ type KeyService interface {
 // Config carries the server's dependencies.
 type Config struct {
 	Verifier auth.Verifier
-	Upstream http.Handler   // OpenAI-compatible inference backend proxy
-	Usage    usage.Recorder // metadata-only accounting; nil disables
-	Keys     KeyService     // api key management; nil disables the routes
+	Upstream http.Handler                    // OpenAI-compatible inference backend proxy
+	Usage    usage.Recorder                  // metadata-only accounting; nil disables
+	Keys     KeyService                      // api key management; nil disables the routes
+	Quota    func(http.Handler) http.Handler // per-subject caps; nil disables
 }
 
 // New returns the gateway's root HTTP handler. /healthz is public;
@@ -36,6 +37,10 @@ func New(cfg Config) http.Handler {
 	completions := cfg.Upstream
 	if cfg.Usage != nil {
 		completions = usage.Middleware(cfg.Usage)(completions)
+	}
+	if cfg.Quota != nil {
+		// quota gates BEFORE usage recording: denied requests are not billed
+		completions = cfg.Quota(completions)
 	}
 
 	protected := auth.Middleware(cfg.Verifier)

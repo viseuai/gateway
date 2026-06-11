@@ -155,6 +155,37 @@ func TestAPIKeyCannotManageKeys(t *testing.T) {
 	}
 }
 
+func TestQuotaDenialShortCircuitsBeforeUsage(t *testing.T) {
+	rec := &captureUsage{}
+	deny := func(http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+		})
+	}
+	upstreamHit := false
+	srv := New(Config{
+		Verifier: stubVerifier{},
+		Upstream: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { upstreamHit = true }),
+		Usage:    rec,
+		Quota:    deny,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer good")
+	res := httptest.NewRecorder()
+	srv.ServeHTTP(res, req)
+
+	if res.Code != http.StatusTooManyRequests {
+		t.Fatalf("status: got %d, want 429", res.Code)
+	}
+	if upstreamHit {
+		t.Error("upstream reached despite quota denial")
+	}
+	if len(rec.events) != 0 {
+		t.Error("denied request must not produce a usage event")
+	}
+}
+
 type captureUsage struct{ events []usage.Event }
 
 func (c *captureUsage) Record(_ context.Context, e usage.Event) error {
