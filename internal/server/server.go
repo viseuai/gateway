@@ -22,7 +22,8 @@ type KeyService interface {
 // Config carries the server's dependencies.
 type Config struct {
 	Verifier auth.Verifier
-	Upstream http.Handler                    // OpenAI-compatible inference backend proxy
+	Upstream http.Handler                    // completions backend (single proxy or model router)
+	Models   http.Handler                    // /v1/models; nil falls back to Upstream
 	Usage    usage.Recorder                  // metadata-only accounting; nil disables
 	Keys     KeyService                      // api key management; nil disables the routes
 	Quota    func(http.Handler) http.Handler // per-subject caps; nil disables
@@ -43,10 +44,15 @@ func New(cfg Config) http.Handler {
 		completions = cfg.Quota(completions)
 	}
 
+	models := cfg.Models
+	if models == nil {
+		models = cfg.Upstream
+	}
+
 	protected := auth.Middleware(cfg.Verifier)
 	mux.Handle("GET /v1/me", protected(http.HandlerFunc(handleMe)))
 	mux.Handle("POST /v1/chat/completions", protected(completions))
-	mux.Handle("GET /v1/models", protected(cfg.Upstream))
+	mux.Handle("GET /v1/models", protected(models))
 
 	if cfg.Keys != nil {
 		h := keyHandlers{keys: cfg.Keys}
