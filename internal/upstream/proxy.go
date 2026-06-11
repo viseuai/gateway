@@ -19,6 +19,12 @@ func Handler(target *url.URL) http.Handler {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.SetXForwarded()
+			// Never leak caller credentials to (possibly volunteer-run)
+			// backends, and drop browser headers that trip engine origin
+			// checks (Ollama rejects foreign Origins with 403).
+			for _, h := range []string{"Authorization", "Cookie", "Origin", "Referer"} {
+				pr.Out.Header.Del(h)
+			}
 		},
 		// The gateway is the only CORS authority: engines (llama.cpp, MLX)
 		// emit their own permissive CORS headers, and forwarding them
