@@ -116,6 +116,32 @@ func (p *PG) NodesBySubject(ctx context.Context, subject string, ttl time.Durati
 	return nodes, rows.Err()
 }
 
+// AllNodes lists every node with liveness per ttl (admin surface).
+func (p *PG) AllNodes(ctx context.Context, ttl time.Duration) ([]NodeStatus, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT node,
+		       array_agg(model ORDER BY model),
+		       max(last_seen),
+		       max(last_seen) > now() - $1::interval
+		FROM node_models
+		GROUP BY node ORDER BY node`,
+		ttl.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []NodeStatus
+	for rows.Next() {
+		var n NodeStatus
+		if err := rows.Scan(&n.Node, &n.Models, &n.LastSeen, &n.Online); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
 // Models lists distinct live model ids.
 func (p *PG) Models(ctx context.Context, ttl time.Duration) ([]string, error) {
 	rows, err := p.pool.Query(ctx, `

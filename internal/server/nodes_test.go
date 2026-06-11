@@ -44,6 +44,10 @@ func (c *captureRegistry) NodesBySubject(_ context.Context, _ string, _ time.Dur
 	return nil, nil
 }
 
+func (c *captureRegistry) AllNodes(_ context.Context, _ time.Duration) ([]registry.NodeStatus, error) {
+	return nil, nil
+}
+
 func heartbeat(t *testing.T, reg NodeRegistry, token, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	srv := New(Config{Verifier: nodeVerifier{}, Upstream: http.NotFoundHandler(), Registry: reg})

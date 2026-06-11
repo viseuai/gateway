@@ -130,6 +130,10 @@ type fakeNodeLister struct{}
 
 func (fakeNodeLister) Upsert(_ context.Context, _ registry.Heartbeat) error { return nil }
 
+func (fakeNodeLister) AllNodes(_ context.Context, _ time.Duration) ([]registry.NodeStatus, error) {
+	return nil, nil
+}
+
 func (fakeNodeLister) NodesBySubject(_ context.Context, subject string, _ time.Duration) ([]registry.NodeStatus, error) {
 	if subject != "user-123" {
 		return nil, nil

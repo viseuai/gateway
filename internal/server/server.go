@@ -22,10 +22,11 @@ type KeyService interface {
 	Revoke(ctx context.Context, subject string, id int64) error
 }
 
-// NodeRegistry receives node heartbeats and lists an operator's nodes.
+// NodeRegistry receives node heartbeats and lists nodes.
 type NodeRegistry interface {
 	Upsert(ctx context.Context, hb registry.Heartbeat) error
 	NodesBySubject(ctx context.Context, subject string, ttl time.Duration) ([]registry.NodeStatus, error)
+	AllNodes(ctx context.Context, ttl time.Duration) ([]registry.NodeStatus, error)
 }
 
 // keyRoles maps the public key "type" to stored roles.
@@ -46,6 +47,7 @@ type Config struct {
 	Registry    NodeRegistry                    // node heartbeats; nil disables
 	CORSOrigins []string                        // browser origins allowed to call the API
 	RegistryTTL time.Duration                   // node liveness window (default 60s)
+	Admin       *AdminConfig                    // direção self-service; nil disables
 }
 
 // New returns the gateway's root HTTP handler. /healthz is public;
@@ -100,6 +102,14 @@ func New(cfg Config) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{"data": nodes})
 		})))
+	}
+
+	if cfg.Admin != nil {
+		ttl := cfg.RegistryTTL
+		if ttl == 0 {
+			ttl = 60 * time.Second
+		}
+		registerAdmin(mux, protected, cfg.Admin, cfg.Registry, ttl)
 	}
 
 	return cors(cfg.CORSOrigins, mux)

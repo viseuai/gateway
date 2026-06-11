@@ -13,6 +13,8 @@ import (
 	"github.com/viseuai/gateway/internal/apikey"
 	"github.com/viseuai/gateway/internal/auth"
 	"github.com/viseuai/gateway/internal/db"
+	"github.com/viseuai/gateway/internal/kcadmin"
+	"github.com/viseuai/gateway/internal/meshkey"
 	"github.com/viseuai/gateway/internal/quota"
 	"github.com/viseuai/gateway/internal/registry"
 	"github.com/viseuai/gateway/internal/route"
@@ -83,6 +85,26 @@ func main() {
 	router := route.NewMulti(sources...)
 	cfg.Upstream = router
 	cfg.Models = router.Models()
+
+	// Admin surface (direção self-service) needs both upstream credentials.
+	if kcSecret := os.Getenv("KC_ADMIN_CLIENT_SECRET"); kcSecret != "" && os.Getenv("HEADSCALE_API_KEY") != "" {
+		cfg.Admin = &server.AdminConfig{
+			Directory: kcadmin.New(
+				envOr("KC_ADMIN_BASE", "http://keycloak:8080"),
+				envOr("KC_REALM", "viseu"),
+				envOr("KC_ADMIN_CLIENT_ID", "gateway-admin"),
+				kcSecret,
+			),
+			MeshKeys: meshkey.New(
+				envOr("HEADSCALE_BASE", "http://headscale:8080"),
+				os.Getenv("HEADSCALE_API_KEY"),
+				envOr("HEADSCALE_USER", "1"),
+			),
+		}
+		log.Print("admin surface: enabled")
+	} else {
+		log.Print("admin surface: DISABLED (missing KC_ADMIN_CLIENT_SECRET / HEADSCALE_API_KEY)")
+	}
 
 	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
 		for _, o := range strings.Split(origins, ",") {
