@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/viseuai/gateway/internal/apikey"
 	"github.com/viseuai/gateway/internal/auth"
@@ -16,14 +17,22 @@ import (
 
 // KeyService is the API-key lifecycle the management routes need.
 type KeyService interface {
-	Create(ctx context.Context, subject, name string) (string, apikey.Key, error)
+	Create(ctx context.Context, subject, name string, roles []string) (string, apikey.Key, error)
 	List(ctx context.Context, subject string) ([]apikey.Key, error)
 	Revoke(ctx context.Context, subject string, id int64) error
 }
 
-// NodeRegistry receives node heartbeats.
+// NodeRegistry receives node heartbeats and lists an operator's nodes.
 type NodeRegistry interface {
 	Upsert(ctx context.Context, hb registry.Heartbeat) error
+	NodesBySubject(ctx context.Context, subject string, ttl time.Duration) ([]registry.NodeStatus, error)
+}
+
+// keyRoles maps the public key "type" to stored roles.
+var keyRoles = map[string][]string{
+	"":     {"member"},
+	"api":  {"member"},
+	"node": {"node"},
 }
 
 // Config carries the server's dependencies.
@@ -33,8 +42,10 @@ type Config struct {
 	Models   http.Handler                    // /v1/models; nil falls back to Upstream
 	Usage    usage.Recorder                  // metadata-only accounting; nil disables
 	Keys     KeyService                      // api key management; nil disables the routes
-	Quota    func(http.Handler) http.Handler // per-subject caps; nil disables
-	Registry NodeRegistry                    // node heartbeats; nil disables
+	Quota       func(http.Handler) http.Handler // per-subject caps; nil disables
+	Registry    NodeRegistry                    // node heartbeats; nil disables
+	CORSOrigins []string                        // browser origins allowed to call the API
+	RegistryTTL time.Duration                   // node liveness window (default 60s)
 }
 
 // New returns the gateway's root HTTP handler. /healthz is public;
@@ -70,11 +81,54 @@ func New(cfg Config) http.Handler {
 	}
 
 	if cfg.Registry != nil {
+		ttl := cfg.RegistryTTL
+		if ttl == 0 {
+			ttl = 60 * time.Second
+		}
 		mux.Handle("POST /v1/nodes/heartbeat",
 			protected(roleOnly("node", handleHeartbeat(cfg.Registry))))
+		mux.Handle("GET /v1/nodes", protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id, _ := auth.IdentityFrom(r.Context())
+			nodes, err := cfg.Registry.NodesBySubject(r.Context(), id.Subject, ttl)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "Could not list nodes.", "api_error")
+				return
+			}
+			if nodes == nil {
+				nodes = []registry.NodeStatus{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"data": nodes})
+		})))
 	}
 
-	return mux
+	return cors(cfg.CORSOrigins, mux)
+}
+
+// cors wraps the mux with an origin allowlist. Non-listed origins get no
+// CORS headers (the browser blocks them); requests without Origin pass
+// through untouched.
+func cors(origins []string, next http.Handler) http.Handler {
+	allowed := map[string]bool{}
+	for _, o := range origins {
+		allowed[o] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && allowed[origin] {
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Add("Vary", "Origin")
+			if r.Method == http.MethodOptions {
+				h.Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+				h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				h.Set("Access-Control-Max-Age", "600")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // roleOnly forbids callers without the given realm/key role.
@@ -134,12 +188,18 @@ func (h keyHandlers) create(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.IdentityFrom(r.Context())
 	var req struct {
 		Name string `json:"name"`
+		Type string `json:"type"` // "" | "api" | "node"
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 		writeError(w, http.StatusBadRequest, "Provide a JSON body with a non-empty name.", "invalid_request_error")
 		return
 	}
-	plaintext, key, err := h.keys.Create(r.Context(), id.Subject, req.Name)
+	roles, ok := keyRoles[req.Type]
+	if !ok {
+		writeError(w, http.StatusBadRequest, `Key type must be "api" or "node".`, "invalid_request_error")
+		return
+	}
+	plaintext, key, err := h.keys.Create(r.Context(), id.Subject, req.Name, roles)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Could not create the key.", "api_error")
 		return

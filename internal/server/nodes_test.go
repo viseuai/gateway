@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/viseuai/gateway/internal/auth"
 	"github.com/viseuai/gateway/internal/registry"
@@ -37,6 +38,10 @@ func (c *captureRegistry) Upsert(_ context.Context, hb registry.Heartbeat) error
 	}
 	c.upserts = append(c.upserts, hb)
 	return nil
+}
+
+func (c *captureRegistry) NodesBySubject(_ context.Context, _ string, _ time.Duration) ([]registry.NodeStatus, error) {
+	return nil, nil
 }
 
 func heartbeat(t *testing.T, reg NodeRegistry, token, body string) *httptest.ResponseRecorder {

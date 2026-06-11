@@ -71,6 +71,7 @@ func main() {
 		reg := registry.NewPG(pool)
 		cfg.Registry = reg
 		ttl := time.Duration(envInt("REGISTRY_TTL_SECONDS", 60)) * time.Second
+		cfg.RegistryTTL = ttl
 		sources = append(sources, &route.RegistrySource{Store: reg, TTL: ttl})
 
 		log.Printf("postgres: accounting + api keys + quotas (%d req/day, %d tok/mo) + node registry (ttl %s)",
@@ -82,6 +83,13 @@ func main() {
 	router := route.NewMulti(sources...)
 	cfg.Upstream = router
 	cfg.Models = router.Models()
+
+	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
+		for _, o := range strings.Split(origins, ",") {
+			cfg.CORSOrigins = append(cfg.CORSOrigins, strings.TrimSpace(o))
+		}
+		log.Printf("cors origins: %v", cfg.CORSOrigins)
+	}
 
 	addr := ":" + envOr("PORT", "8080")
 	log.Printf("gateway listening on %s (issuer: %s)", addr, issuer)

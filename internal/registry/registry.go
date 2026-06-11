@@ -81,6 +81,41 @@ func (p *PG) Lookup(ctx context.Context, model string, ttl time.Duration) (strin
 	return url, true, nil
 }
 
+// NodeStatus is one node as its operator sees it.
+type NodeStatus struct {
+	Node     string    `json:"node"`
+	Models   []string  `json:"models"`
+	LastSeen time.Time `json:"last_seen"`
+	Online   bool      `json:"online"`
+}
+
+// NodesBySubject lists the caller's nodes with liveness per ttl.
+func (p *PG) NodesBySubject(ctx context.Context, subject string, ttl time.Duration) ([]NodeStatus, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT node,
+		       array_agg(model ORDER BY model),
+		       max(last_seen),
+		       max(last_seen) > now() - $2::interval
+		FROM node_models
+		WHERE subject = $1
+		GROUP BY node ORDER BY node`,
+		subject, ttl.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []NodeStatus
+	for rows.Next() {
+		var n NodeStatus
+		if err := rows.Scan(&n.Node, &n.Models, &n.LastSeen, &n.Online); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
 // Models lists distinct live model ids.
 func (p *PG) Models(ctx context.Context, ttl time.Duration) ([]string, error) {
 	rows, err := p.pool.Query(ctx, `

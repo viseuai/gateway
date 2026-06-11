@@ -62,7 +62,7 @@ type fakeKeys struct {
 	revoked []int64
 }
 
-func (f *fakeKeys) Create(_ context.Context, subject, name string) (string, apikey.Key, error) {
+func (f *fakeKeys) Create(_ context.Context, subject, name string, _ []string) (string, apikey.Key, error) {
 	f.created = append(f.created, subject+"/"+name)
 	return "vsk_plaintext-once", apikey.Key{ID: 7, Name: name}, nil
 }

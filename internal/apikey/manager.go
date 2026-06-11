@@ -19,14 +19,14 @@ type Manager struct {
 
 func NewManager(s ManagerStore) *Manager { return &Manager{store: s} }
 
-// Create mints a key for subject. The plaintext is returned exactly once.
-func (m *Manager) Create(ctx context.Context, subject, name string) (string, Key, error) {
+// Create mints a key for subject with the given roles. The plaintext is
+// returned exactly once.
+func (m *Manager) Create(ctx context.Context, subject, name string, roles []string) (string, Key, error) {
 	plaintext, hash, err := Generate()
 	if err != nil {
 		return "", Key{}, err
 	}
-	// API keys carry the member role; finer scoping is a later iteration.
-	key, err := m.store.Insert(ctx, subject, name, hash, []string{"member"})
+	key, err := m.store.Insert(ctx, subject, name, hash, roles)
 	if err != nil {
 		return "", Key{}, fmt.Errorf("storing key: %w", err)
 	}
