@@ -108,6 +108,32 @@ func TestStripsUpstreamCORSHeaders(t *testing.T) {
 	}
 }
 
+func TestStripsSensitiveAndBrowserHeadersOutbound(t *testing.T) {
+	// Authorization/Cookie must never reach third-party nodes (credential
+	// leak); Origin/Referer trip engine origin checks (Ollama 403s).
+	var got http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		fmt.Fprint(w, `{}`)
+	}))
+	defer up.Close()
+
+	h := Handler(target(t, up.URL))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer member-secret")
+	req.Header.Set("Cookie", "session=abc")
+	req.Header.Set("Origin", "https://chat.viseuai.org")
+	req.Header.Set("Referer", "https://chat.viseuai.org/")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	for _, header := range []string{"Authorization", "Cookie", "Origin", "Referer"} {
+		if v := got.Get(header); v != "" {
+			t.Errorf("%s leaked to upstream: %q", header, v)
+		}
+	}
+}
+
 func TestUpstreamDownIs502(t *testing.T) {
 	dead := httptest.NewServer(nil)
 	dead.Close() // guaranteed-refused port
