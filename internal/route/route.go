@@ -1,7 +1,6 @@
 // Package route dispatches OpenAI-compatible requests to the backend
-// serving the requested model. v1 is a static map from configuration;
-// dynamic registration via the node agent replaces the map later without
-// changing the routing contract.
+// serving the requested model. Backends come from ordered Sources: the
+// static configuration map and the live node registry.
 package route
 
 import (
@@ -15,11 +14,12 @@ import (
 
 // Router picks a backend by the request's model field.
 type Router struct {
-	backends map[string]http.Handler
+	sources []Source
 }
 
+// New builds a Router over a fixed model→handler map.
 func New(backends map[string]http.Handler) *Router {
-	return &Router{backends: backends}
+	return NewMulti(StaticSource(backends))
 }
 
 // ServeHTTP handles completion-style requests (model in the JSON body).
@@ -40,34 +40,41 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	backend, ok := rt.backends[req.Model]
-	if !ok {
-		writeError(w, http.StatusNotFound,
-			fmt.Sprintf("The model %q does not exist on this platform. List available models at /v1/models.", req.Model),
-			"invalid_request_error")
-		return
+	for _, src := range rt.sources {
+		if backend, ok := src.Resolve(r.Context(), req.Model); ok {
+			backend.ServeHTTP(w, r)
+			return
+		}
 	}
-	backend.ServeHTTP(w, r)
+	writeError(w, http.StatusNotFound,
+		fmt.Sprintf("The model %q does not exist on this platform. List available models at /v1/models.", req.Model),
+		"invalid_request_error")
 }
 
-// Models serves the OpenAI-compatible model list for the configured map.
+// Models serves the OpenAI-compatible model list: the deduplicated union
+// of all sources, computed per request so registry changes show live.
 func (rt *Router) Models() http.Handler {
 	type model struct {
 		ID     string `json:"id"`
 		Object string `json:"object"`
 	}
-	ids := make([]string, 0, len(rt.backends))
-	for id := range rt.backends {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen := map[string]bool{}
+		var ids []string
+		for _, src := range rt.sources {
+			for _, id := range src.Models(r.Context()) {
+				if !seen[id] {
+					seen[id] = true
+					ids = append(ids, id)
+				}
+			}
+		}
+		sort.Strings(ids)
 
-	data := make([]model, len(ids))
-	for i, id := range ids {
-		data[i] = model{ID: id, Object: "model"}
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		data := make([]model, len(ids))
+		for i, id := range ids {
+			data[i] = model{ID: id, Object: "model"}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 	})

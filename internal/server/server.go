@@ -4,11 +4,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/viseuai/gateway/internal/apikey"
 	"github.com/viseuai/gateway/internal/auth"
+	"github.com/viseuai/gateway/internal/registry"
 	"github.com/viseuai/gateway/internal/usage"
 )
 
@@ -19,6 +21,11 @@ type KeyService interface {
 	Revoke(ctx context.Context, subject string, id int64) error
 }
 
+// NodeRegistry receives node heartbeats.
+type NodeRegistry interface {
+	Upsert(ctx context.Context, hb registry.Heartbeat) error
+}
+
 // Config carries the server's dependencies.
 type Config struct {
 	Verifier auth.Verifier
@@ -27,6 +34,7 @@ type Config struct {
 	Usage    usage.Recorder                  // metadata-only accounting; nil disables
 	Keys     KeyService                      // api key management; nil disables the routes
 	Quota    func(http.Handler) http.Handler // per-subject caps; nil disables
+	Registry NodeRegistry                    // node heartbeats; nil disables
 }
 
 // New returns the gateway's root HTTP handler. /healthz is public;
@@ -61,7 +69,48 @@ func New(cfg Config) http.Handler {
 		mux.Handle("DELETE /v1/keys/{id}", protected(oidcOnly(h.revoke)))
 	}
 
+	if cfg.Registry != nil {
+		mux.Handle("POST /v1/nodes/heartbeat",
+			protected(roleOnly("node", handleHeartbeat(cfg.Registry))))
+	}
+
 	return mux
+}
+
+// roleOnly forbids callers without the given realm/key role.
+func roleOnly(role string, next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := auth.IdentityFrom(r.Context())
+		for _, have := range id.Roles {
+			if have == role {
+				next(w, r)
+				return
+			}
+		}
+		writeError(w, http.StatusForbidden,
+			fmt.Sprintf("This operation requires the %q role.", role), "permission_error")
+	})
+}
+
+func handleHeartbeat(reg NodeRegistry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, _ := auth.IdentityFrom(r.Context())
+		var req struct {
+			Node   string             `json:"node"`
+			Models []registry.ModelAd `json:"models"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Node == "" {
+			writeError(w, http.StatusBadRequest,
+				"Provide a JSON body with a node name and a models list.", "invalid_request_error")
+			return
+		}
+		hb := registry.Heartbeat{Subject: id.Subject, Node: req.Node, Models: req.Models}
+		if err := reg.Upsert(r.Context(), hb); err != nil {
+			writeError(w, http.StatusInternalServerError, "Could not record the heartbeat.", "api_error")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 // oidcOnly forbids api-key-authenticated callers: a key must never be able

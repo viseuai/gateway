@@ -8,11 +8,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/viseuai/gateway/internal/apikey"
 	"github.com/viseuai/gateway/internal/auth"
 	"github.com/viseuai/gateway/internal/db"
 	"github.com/viseuai/gateway/internal/quota"
+	"github.com/viseuai/gateway/internal/registry"
 	"github.com/viseuai/gateway/internal/route"
 	"github.com/viseuai/gateway/internal/server"
 	"github.com/viseuai/gateway/internal/upstream"
@@ -29,32 +31,25 @@ func main() {
 	cfg := server.Config{}
 	cfg.Verifier = verifier
 
-	// BACKENDS="model-id=http://host:port,model-id2=http://..." enables the
-	// model router; otherwise everything proxies to UPSTREAM_URL.
-	if spec := os.Getenv("BACKENDS"); spec != "" {
-		backends := map[string]http.Handler{}
-		for _, pair := range strings.Split(spec, ",") {
-			model, rawURL, ok := strings.Cut(strings.TrimSpace(pair), "=")
-			if !ok {
-				log.Fatalf("BACKENDS entry %q: want model=url", pair)
-			}
-			u, err := url.Parse(rawURL)
-			if err != nil {
-				log.Fatalf("BACKENDS url for %s: %v", model, err)
-			}
-			backends[model] = upstream.Handler(u)
-			log.Printf("backend: %s → %s", model, rawURL)
+	// Static backends: BACKENDS="model-id=http://host:port,...".
+	static := route.StaticSource{}
+	for _, pair := range strings.Split(os.Getenv("BACKENDS"), ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
 		}
-		router := route.New(backends)
-		cfg.Upstream = router
-		cfg.Models = router.Models()
-	} else {
-		upstreamURL, err := url.Parse(envOr("UPSTREAM_URL", "http://llamacpp:8081"))
+		model, rawURL, ok := strings.Cut(pair, "=")
+		if !ok {
+			log.Fatalf("BACKENDS entry %q: want model=url", pair)
+		}
+		u, err := url.Parse(rawURL)
 		if err != nil {
-			log.Fatalf("parsing UPSTREAM_URL: %v", err)
+			log.Fatalf("BACKENDS url for %s: %v", model, err)
 		}
-		cfg.Upstream = upstream.Handler(upstreamURL)
+		static[model] = upstream.Handler(u)
+		log.Printf("static backend: %s → %s", model, rawURL)
 	}
+	sources := []route.Source{static}
 
 	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
 		pool, err := db.Connect(context.Background(), dsn)
@@ -72,11 +67,21 @@ func main() {
 			MonthlyTokens: int64(envInt("QUOTA_MONTHLY_TOKENS", 2_000_000)),
 		}
 		cfg.Quota = quota.New(quota.NewPG(pool), limits).Middleware
-		log.Printf("postgres: usage accounting + api keys + quotas enabled (%d req/day, %d tokens/month)",
-			limits.DailyRequests, limits.MonthlyTokens)
+
+		reg := registry.NewPG(pool)
+		cfg.Registry = reg
+		ttl := time.Duration(envInt("REGISTRY_TTL_SECONDS", 60)) * time.Second
+		sources = append(sources, &route.RegistrySource{Store: reg, TTL: ttl})
+
+		log.Printf("postgres: accounting + api keys + quotas (%d req/day, %d tok/mo) + node registry (ttl %s)",
+			limits.DailyRequests, limits.MonthlyTokens, ttl)
 	} else {
 		log.Print("postgres: DISABLED (no DATABASE_URL) — oidc only, no accounting")
 	}
+
+	router := route.NewMulti(sources...)
+	cfg.Upstream = router
+	cfg.Models = router.Models()
 
 	addr := ":" + envOr("PORT", "8080")
 	log.Printf("gateway listening on %s (issuer: %s)", addr, issuer)
