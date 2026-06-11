@@ -56,6 +56,104 @@ func TestChatCompletionsForwardsToUpstream(t *testing.T) {
 	}
 }
 
+type fakeKeys struct {
+	created []string
+	revoked []int64
+}
+
+func (f *fakeKeys) Create(_ context.Context, subject, name string) (string, apikey.Key, error) {
+	f.created = append(f.created, subject+"/"+name)
+	return "vsk_plaintext-once", apikey.Key{ID: 7, Name: name}, nil
+}
+
+func (f *fakeKeys) List(_ context.Context, subject string) ([]apikey.Key, error) {
+	return []apikey.Key{{ID: 7, Name: "ci"}}, nil
+}
+
+func (f *fakeKeys) Revoke(_ context.Context, subject string, id int64) error {
+	f.revoked = append(f.revoked, id)
+	return nil
+}
+
+// apiKeyVerifier simulates a caller authenticated WITH an api key.
+type apiKeyVerifier struct{}
+
+func (apiKeyVerifier) Verify(_ context.Context, raw string) (*auth.Identity, error) {
+	if raw != "vsk_good" {
+		return nil, errors.New("invalid")
+	}
+	return &auth.Identity{Subject: "user-123", Roles: []string{"member"}, Method: auth.MethodAPIKey}, nil
+}
+
+func TestCreateKeyReturnsPlaintextOnce(t *testing.T) {
+	keys := &fakeKeys{}
+	srv := New(Config{Verifier: stubVerifier{}, Upstream: http.NotFoundHandler(), Keys: keys})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/keys", strings.NewReader(`{"name":"ci"}`))
+	req.Header.Set("Authorization", "Bearer good")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201 (body: %s)", rec.Code, rec.Body)
+	}
+	var body struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+		Key  string `json:"key"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Key != "vsk_plaintext-once" || body.Name != "ci" {
+		t.Errorf("create response: %+v", body)
+	}
+	if len(keys.created) != 1 || keys.created[0] != "user-123/ci" {
+		t.Errorf("created: %v", keys.created)
+	}
+}
+
+func TestListKeysNeverExposesSecrets(t *testing.T) {
+	srv := New(Config{Verifier: stubVerifier{}, Upstream: http.NotFoundHandler(), Keys: &fakeKeys{}})
+	rec := get(t, srv, "/v1/keys", "Bearer good")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "vsk_") {
+		t.Errorf("listing leaked key material: %s", rec.Body)
+	}
+}
+
+func TestRevokeKey(t *testing.T) {
+	keys := &fakeKeys{}
+	srv := New(Config{Verifier: stubVerifier{}, Upstream: http.NotFoundHandler(), Keys: keys})
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/keys/7", nil)
+	req.Header.Set("Authorization", "Bearer good")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204", rec.Code)
+	}
+	if len(keys.revoked) != 1 || keys.revoked[0] != 7 {
+		t.Errorf("revoked: %v", keys.revoked)
+	}
+}
+
+func TestAPIKeyCannotManageKeys(t *testing.T) {
+	srv := New(Config{Verifier: apiKeyVerifier{}, Upstream: http.NotFoundHandler(), Keys: &fakeKeys{}})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/keys", strings.NewReader(`{"name":"x"}`))
+	req.Header.Set("Authorization", "Bearer vsk_good")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("api-key auth minting keys: got %d, want 403", rec.Code)
+	}
+}
+
 type captureUsage struct{ events []usage.Event }
 
 func (c *captureUsage) Record(_ context.Context, e usage.Event) error {
